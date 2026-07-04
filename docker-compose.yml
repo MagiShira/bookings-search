@@ -1,0 +1,15 @@
+services:
+  bookings-search:
+    image: ghcr.io/your-org/bookings-search:latest
+    restart: unless-stopped
+    env_file: /etc/bookings-search/env
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: "http://+:5000"
+      Bookings__BusinessId: "bookings@example.com"
+      Bookings__IcsUrl: "https://outlook.office365.com/owa/calendar/<your-calendar-id>/calendar.ics"
+      Bookings__RefreshIntervalSeconds: "30"
+      Bookings__StaffEmailDomain: ""
+      TZ: America/Los_Angeles

@@ -1,0 +1,186 @@
+@page "/search"
+@rendermode InteractiveServer
+@inject IBookingsService Bookings
+@implements IDisposable
+
+<PageTitle>Search — Bookings</PageTitle>
+
+<div class="search-form mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-12 col-md-5">
+            <label class="form-label">Search</label>
+            <input class="form-control" type="text" placeholder="Customer, service, notes..."
+                   @bind="_filter.Query" @bind:event="oninput" @bind:after="OnQueryChanged"
+                   @onkeydown="OnKeyDown" />
+        </div>
+        <div class="col-12 col-md-3">
+            <label class="form-label">Staff</label>
+            <select class="form-select" @bind="_filter.StaffMemberId" @bind:after="RunSearch">
+                <option value="">All staff</option>
+                @foreach (var staff in _staffMembers)
+                {
+                    <option value="@staff.Id">@staff.DisplayName</option>
+                }
+            </select>
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label">From</label>
+            <input class="form-control" type="date"
+                   value="@_filter.DateFrom.ToString("yyyy-MM-dd")"
+                   @onchange="DateFromChanged" />
+        </div>
+        <div class="col-6 col-md-2">
+            <label class="form-label">To</label>
+            <input class="form-control" type="date"
+                   value="@_filter.DateTo.ToString("yyyy-MM-dd")"
+                   @onchange="DateToChanged" />
+        </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+        <select class="form-select form-select-sm w-auto" @bind="_statusFilter" @bind:after="ApplyDisplay">
+            <option value="">All appointments</option>
+            <option value="upcoming">Upcoming only</option>
+            <option value="past">Past only</option>
+        </select>
+        <select class="form-select form-select-sm w-auto" @bind="_sort" @bind:after="ApplyDisplay">
+            <option value="date">Date ↑</option>
+            <option value="date-desc">Date ↓</option>
+            <option value="customer">Customer A–Z</option>
+            <option value="service">Service A–Z</option>
+        </select>
+        <div class="ms-auto d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="ResetFilter">Reset</button>
+            @if (_display is { Count: > 0 })
+            {
+                <a class="btn btn-sm btn-outline-secondary" href="@ExportUrl" target="_blank">↓ Export CSV</a>
+            }
+        </div>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <div class="text-center py-4"><span class="spinner-border"></span></div>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+else if (_display is not null)
+{
+    <div class="text-muted small mb-2">@_display.Count result@(_display.Count == 1 ? "" : "s")</div>
+    @if (_display.Count == 0)
+    {
+        <p class="text-muted">No appointments found.</p>
+    }
+    else
+    {
+        @for (int i = 0; i < _display.Count; i++)
+        {
+            var appt = _display[i];
+            var isNewDate = (_sort is "date" or "date-desc") &&
+                            (i == 0 || DateOnly.FromDateTime(appt.Start.LocalDateTime) !=
+                                        DateOnly.FromDateTime(_display[i - 1].Start.LocalDateTime));
+            @if (isNewDate)
+            {
+                <div class="date-group-header">@appt.Start.LocalDateTime.ToString("dddd, MMMM d, yyyy")</div>
+            }
+            <AppointmentCard Appointment="appt" />
+        }
+    }
+}
+
+@code {
+    private SearchFilterVm _filter = new();
+    private IReadOnlyList<StaffMemberVm> _staffMembers = [];
+    private IReadOnlyList<AppointmentVm>? _results;
+    private IReadOnlyList<AppointmentVm>? _display;
+    private string _statusFilter = "";
+    private string _sort = "date";
+    private bool _loading;
+    private string? _error;
+    private Timer? _debounce;
+
+    private string ExportUrl
+    {
+        get
+        {
+            var parts = new List<string>
+            {
+                $"dateFrom={_filter.DateFrom:yyyy-MM-dd}",
+                $"dateTo={_filter.DateTo:yyyy-MM-dd}"
+            };
+            if (!string.IsNullOrEmpty(_filter.Query))
+                parts.Add($"query={Uri.EscapeDataString(_filter.Query)}");
+            if (!string.IsNullOrEmpty(_filter.StaffMemberId))
+                parts.Add($"staffMemberId={Uri.EscapeDataString(_filter.StaffMemberId)}");
+            return "/api/export.csv?" + string.Join("&", parts);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _staffMembers = await Bookings.GetStaffMembersAsync(); }
+        catch (Exception ex) { _error = $"Failed to load staff: {ex.Message}"; return; }
+        await RunSearch();
+    }
+
+    private void OnQueryChanged()
+    {
+        _debounce?.Dispose();
+        _debounce = new Timer(async _ => await InvokeAsync(RunSearch), null, 350, Timeout.Infinite);
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") { _debounce?.Dispose(); await RunSearch(); }
+    }
+
+    private async Task DateFromChanged(ChangeEventArgs e)
+    {
+        _filter.DateFrom = DateOnly.Parse(e.Value!.ToString()!);
+        await RunSearch();
+    }
+
+    private async Task DateToChanged(ChangeEventArgs e)
+    {
+        _filter.DateTo = DateOnly.Parse(e.Value!.ToString()!);
+        await RunSearch();
+    }
+
+    private async Task RunSearch()
+    {
+        _loading = true; _error = null; StateHasChanged();
+        try   { _results = await Bookings.SearchAppointmentsAsync(_filter); ApplyDisplay(); }
+        catch (Exception ex) { _error = $"Search failed: {ex.Message}"; }
+        finally { _loading = false; StateHasChanged(); }
+    }
+
+    private void ApplyDisplay()
+    {
+        if (_results is null) return;
+        IEnumerable<AppointmentVm> q = _statusFilter switch
+        {
+            "upcoming" => _results.Where(a => !a.IsPast),
+            "past"     => _results.Where(a => a.IsPast),
+            _          => _results,
+        };
+        q = _sort switch
+        {
+            "date-desc" => q.OrderByDescending(a => a.Start),
+            "customer"  => q.OrderBy(a => a.CustomerName).ThenBy(a => a.Start),
+            "service"   => q.OrderBy(a => a.ServiceName).ThenBy(a => a.Start),
+            _           => q.OrderBy(a => a.Start),
+        };
+        _display = q.ToList();
+        StateHasChanged();
+    }
+
+    private async Task ResetFilter()
+    {
+        _filter = new(); _statusFilter = ""; _sort = "date";
+        await RunSearch();
+    }
+
+    public void Dispose() => _debounce?.Dispose();
+}

@@ -1,0 +1,69 @@
+@inject IConfiguration Config
+
+<div class="appt-card @(Appointment.IsActive ? "appt-active" : Appointment.IsPast ? "appt-past" : "")">
+    <div class="appt-time">
+        <span class="appt-date">@Appointment.Start.LocalDateTime.ToString("ddd MMM d")</span>
+        <span class="appt-sep"> · </span>
+        <span class="appt-start">@Appointment.Start.LocalDateTime.ToString("h:mm tt")</span>
+        <span class="appt-sep">–</span>
+        <span class="appt-end">@Appointment.End.LocalDateTime.ToString("h:mm tt")</span>
+        @if (Appointment.IsActive)
+        {
+            <span class="badge bg-success ms-2">Now</span>
+        }
+    </div>
+    <div class="appt-body">
+        <div class="appt-customer">
+            @Appointment.CustomerName
+            @if (!string.IsNullOrWhiteSpace(Appointment.CustomerEmail))
+            {
+                <span class="appt-contact text-muted fw-normal ms-2">@Appointment.CustomerEmail</span>
+            }
+            else if (!string.IsNullOrWhiteSpace(Appointment.CustomerPhone))
+            {
+                <span class="appt-contact text-muted fw-normal ms-2">@Appointment.CustomerPhone</span>
+            }
+        </div>
+        <div class="appt-service text-muted small">
+            @Appointment.ServiceName
+            @if (Appointment.TicketId is not null)
+            {
+                <span> (@Appointment.TicketId)</span>
+            }
+        </div>
+        @if (Appointment.TicketId is not null && _ticketUrl is not null)
+        {
+            <a class="btn btn-sm btn-outline-secondary mt-2"
+               href="@_ticketUrl"
+               target="_blank" rel="noopener noreferrer">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16" class="me-1">
+                    <path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/>
+                    <path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/>
+                </svg>
+                Open ticket
+            </a>
+        }
+        @if (!string.IsNullOrWhiteSpace(Appointment.ServiceNotes))
+        {
+            <div class="appt-notes small text-muted mt-1">@Appointment.ServiceNotes</div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AppointmentVm Appointment { get; set; } = null!;
+
+    // Optional ticket-system link. Configure Bookings:TicketUrlTemplate with a {0}
+    // placeholder for the ticket ID (e.g. "https://tickets.example.com/Ticket?id={0}").
+    // Left blank, the "Open ticket" button is hidden.
+    private string? _ticketUrl
+    {
+        get
+        {
+            var template = Config["Bookings:TicketUrlTemplate"];
+            return string.IsNullOrWhiteSpace(template) || Appointment.TicketId is null
+                ? null
+                : string.Format(template, Uri.EscapeDataString(Appointment.TicketId));
+        }
+    }
+}

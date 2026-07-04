@@ -1,0 +1,190 @@
+@page "/day"
+@rendermode InteractiveServer
+@inject IBookingsService Bookings
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>Day View — Bookings</PageTitle>
+
+<div class="d-flex align-items-center gap-2 mb-3">
+    <button class="btn btn-outline-secondary btn-sm" @onclick="PrevDay">&#8249;</button>
+    <input type="date" class="form-control form-control-sm w-auto"
+           value="@_dateViewDate.ToString("yyyy-MM-dd")"
+           @onchange="DateViewDateChanged" />
+    <button class="btn btn-outline-secondary btn-sm" @onclick="NextDay">&#8250;</button>
+    @if (_dateViewDate != DateOnly.FromDateTime(DateTime.Today))
+    {
+        <button class="btn btn-link btn-sm p-0" @onclick="GoToToday">Today</button>
+    }
+    @if (_dateLoading)
+    {
+        <span class="spinner-border spinner-border-sm text-secondary ms-1"></span>
+    }
+</div>
+
+@if (_dateError is not null)
+{
+    <div class="alert alert-danger">@_dateError</div>
+}
+
+<div class="tg-scroll" id="tg-scroll">
+    <div class="tg-inner" style="height:@(GridTotalHeight.ToString("F0"))px">
+
+        @* Slot lines and labels *@
+        @for (int slot = 0; slot <= (GridEnd - GridStart) * 2; slot++)
+        {
+            var isHour = slot % 2 == 0;
+            var topPx  = (slot * SlotPx).ToString("F0");
+            <div class="@(isHour ? "tg-slot tg-hour" : "tg-slot tg-half")"
+                 style="top:@(topPx)px">
+                @if (isHour)
+                {
+                    var h   = GridStart + slot / 2;
+                    var lbl = new TimeOnly(h, 0).ToString("h tt");
+                    <span class="tg-lbl">@lbl</span>
+                }
+            </div>
+        }
+
+        @* Now line *@
+        @{
+            var nowTime = TimeOnly.FromDateTime(_now);
+        }
+        @if (nowTime.Hour >= GridStart && nowTime.Hour < GridEnd)
+        {
+            <div class="tg-now" id="tg-now" style="top:@(TimeToPixels(nowTime).ToString("F0"))px"></div>
+        }
+
+        @* Appointment blocks *@
+        <div class="tg-appts">
+            @foreach (var s in _dayLayout)
+            {
+                var cls = s.Appt.IsActive ? "tg-appt tg-appt-now"
+                        : s.Appt.IsPast   ? "tg-appt tg-appt-past"
+                        :                   "tg-appt tg-appt-soon";
+                <div class="@cls"
+                     title="@s.Appt.CustomerName — @s.Appt.ServiceName (@s.Appt.Start.LocalDateTime.ToString("h:mm tt") – @s.Appt.End.LocalDateTime.ToString("h:mm tt"))"
+                     style="top:@(s.Top.ToString("F0"))px; height:@(s.Height.ToString("F0"))px; left:calc(@(s.Left.ToString("F2"))% + 1px); width:calc(@(s.Width.ToString("F2"))% - 2px)">
+                    <div class="tg-appt-time">@s.Appt.Start.LocalDateTime.ToString("h:mm") – @s.Appt.End.LocalDateTime.ToString("h:mm tt")</div>
+                    <div class="tg-appt-name">@s.Appt.CustomerName</div>
+                    @if (s.Height >= 44)
+                    {
+                        <div class="tg-appt-svc">@s.Appt.ServiceName</div>
+                    }
+                </div>
+            }
+        </div>
+
+    </div>
+</div>
+
+@code {
+    private const int    GridStart = 7;
+    private const int    GridEnd   = 21;
+    private const double SlotPx   = 40.0;
+
+    private static double GridTotalHeight => (GridEnd - GridStart) * 2 * SlotPx + 20;
+
+    private static double TimeToPixels(TimeOnly t) =>
+        ((t.Hour - GridStart) * 60 + t.Minute) * (SlotPx / 30.0);
+
+    private DateOnly _dateViewDate = DateOnly.FromDateTime(DateTime.Today);
+    private List<DaySlot> _dayLayout = [];
+    private bool _dateLoading;
+    private string? _dateError;
+    private DateTime _now = DateTime.Now;
+    private Timer? _clockTimer;
+
+    private record DaySlot(AppointmentVm Appt, double Top, double Height, double Left, double Width);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _clockTimer = new Timer(
+            _ => { _now = DateTime.Now; InvokeAsync(StateHasChanged); },
+            null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+
+        await LoadDateView();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await JS.InvokeVoidAsync("eval",
+                "(function(){var g=document.getElementById('tg-scroll'),n=document.getElementById('tg-now');if(g&&n)g.scrollTop=Math.max(0,n.offsetTop-g.clientHeight*0.35);})()");
+    }
+
+    private async Task LoadDateView()
+    {
+        _dateLoading = true; _dateError = null; StateHasChanged();
+        try
+        {
+            var filter = new SearchFilterVm { DateFrom = _dateViewDate, DateTo = _dateViewDate };
+            _dayLayout = ComputeDayLayout(await Bookings.SearchAppointmentsAsync(filter));
+        }
+        catch (Exception ex) { _dateError = $"Failed to load: {ex.Message}"; }
+        finally { _dateLoading = false; StateHasChanged(); }
+    }
+
+    private static List<DaySlot> ComputeDayLayout(IReadOnlyList<AppointmentVm> appts)
+    {
+        var sorted = appts.OrderBy(a => a.Start).ToList();
+        var result = new List<DaySlot>();
+        int i = 0;
+
+        while (i < sorted.Count)
+        {
+            var cluster    = new List<AppointmentVm> { sorted[i] };
+            var clusterEnd = sorted[i].End;
+            int j = i + 1;
+            while (j < sorted.Count && sorted[j].Start < clusterEnd)
+            {
+                cluster.Add(sorted[j]);
+                if (sorted[j].End > clusterEnd) clusterEnd = sorted[j].End;
+                j++;
+            }
+
+            var colEnds   = new List<DateTimeOffset>();
+            var colAssign = new int[cluster.Count];
+            for (int k = 0; k < cluster.Count; k++)
+            {
+                var col = colEnds.FindIndex(e => e <= cluster[k].Start);
+                if (col == -1) { col = colEnds.Count; colEnds.Add(cluster[k].End); }
+                else colEnds[col] = cluster[k].End;
+                colAssign[k] = col;
+            }
+
+            int    totalCols = colEnds.Count;
+            double colW      = 100.0 / totalCols;
+
+            for (int k = 0; k < cluster.Count; k++)
+            {
+                var a  = cluster[k];
+                var s  = TimeOnly.FromDateTime(a.Start.LocalDateTime);
+                var e  = TimeOnly.FromDateTime(a.End.LocalDateTime);
+                var sc = s.Hour < GridStart ? new TimeOnly(GridStart, 0) : s;
+                var ec = e.Hour >= GridEnd   ? new TimeOnly(GridEnd,   0) : e;
+                if (ec <= sc) continue;
+
+                var top = TimeToPixels(sc);
+                var h   = Math.Max(SlotPx * 0.5, TimeToPixels(ec) - top);
+                result.Add(new DaySlot(a, top, h, colAssign[k] * colW, colW));
+            }
+
+            i = j;
+        }
+
+        return result;
+    }
+
+    private async Task PrevDay()   { _dateViewDate = _dateViewDate.AddDays(-1); await LoadDateView(); }
+    private async Task NextDay()   { _dateViewDate = _dateViewDate.AddDays(1);  await LoadDateView(); }
+    private async Task GoToToday() { _dateViewDate = DateOnly.FromDateTime(DateTime.Today); await LoadDateView(); }
+
+    private async Task DateViewDateChanged(ChangeEventArgs e)
+    {
+        _dateViewDate = DateOnly.Parse(e.Value!.ToString()!);
+        await LoadDateView();
+    }
+
+    public void Dispose() => _clockTimer?.Dispose();
+}
